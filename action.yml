@@ -4,20 +4,19 @@ branding:
   icon: 'cpu'
   color: 'purple'
 inputs:
-  github-token:
-    description: 'GitHub Personal Access Token with required permissions'
-    default: ${{ github.token }}
+  copilot-token:
+    description: 'GitHub Personal Access Token (PAT) with "Copilot Requests" permission. The default github.token does NOT have Copilot access - you must provide a PAT with the "Copilot Requests" scope. See: https://github.com/settings/tokens/new?scopes=copilot'
+    required: true
+  repo-token:
+    description: 'Token for standard GitHub repository operations (e.g., pushing commits, creating PRs). Defaults to copilot-token if not specified. You can use the default GITHUB_TOKEN here if you only need repo access.'
     required: false
+    default: ${{ github.token }}
   prompt:
     description: 'Prompt to send to GitHub Copilot'
     required: true
   mcp-config:
     description: 'MCP configuration for GitHub Copilot [Link](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/extend-coding-agent-with-mcp#writing-a-json-configuration-for-mcp-servers)'
     required: false
-    default: |
-      {
-        "mcpServers": { }
-      }
   copilot-config:
     description: 'Configuration for GitHub Copilot'
     required: false
@@ -28,18 +27,16 @@ inputs:
         "theme": "auto",
         "trusted_folders": []
       }
-  log-level:
-    description: 'Log level for GitHub Copilot'
-    required: false
-    default: 'all'
   allow-all-tools:
     description: 'Allow all tools without approval'
     required: false
-    default: 'true'
+    default: true
+  allowed-tools:
+    description: 'Comma-separated list of tools to allow (e.g., "shell(rm),shell(git push)")'
+    required: false
   denied-tools:
     description: 'Comma-separated list of tools to deny (e.g., "shell(rm),shell(git push)")'
     required: false
-    default: ''
   copilot-version:
     description: 'Version of @github/copilot to install (e.g., "latest", "0.0.329")'
     required: false
@@ -47,43 +44,34 @@ inputs:
   model:
     description: 'Model to use (e.g., "claude-sonnet-4.5", "claude-sonnet-4", "gpt-5")'
     required: false
-    default: ''
   additional-directories:
     description: 'Comma-separated list of additional directories to trust for file access (e.g., "/tmp,/var/log")'
     required: false
-    default: ''
   disable-mcp-servers:
     description: 'Comma-separated list of MCP servers to disable (e.g., "github-mcp-server,custom-server")'
     required: false
-    default: ''
-  no-color:
-    description: 'Disable all color output (useful for CI logs)'
+  enable-all-github-mcp-tools:
+    description: 'Enable all GitHub MCP tools'
     required: false
-    default: 'true'
-  screen-reader:
-    description: 'Enable screen reader optimizations'
-    required: false
-    default: 'false'
+    default: false
   resume-session:
     description: 'Resume from a previous session ID (use "latest" for most recent)'
     required: false
-    default: ''
-  show-banner:
-    description: 'Show the animated startup banner'
-    required: false
-    default: 'false'
   upload-artifact:
     description: 'Upload artifact after running Copilot'
     required: false
     default: true
-  cache-cli:
-    description: 'Enable caching for npm packages'
+  agent:
+    description: 'Specify a custom agent to use'
     required: false
-    default: 'false'
-  github-mcp-toolsets:
-    description: 'Specify GitHub MCP toolsets to enable (e.g., "repos,issues,pull_requests,actions,code_security")'
+  log-level:
+    description: 'Set the log level (choices: "none", "error", "warning", "info", "debug", "all", "default")'
     required: false
     default: 'all'
+  options:
+    description: 'Additional options to pass to the Copilot CLI (e.g., "--no-custom-instructions --model gpt-5")'
+    required: false
+    default: '--screen-reader --no-color --stream off'
 outputs:
   logs-path:
     description: 'Path to the copilot logs directory'
@@ -94,175 +82,127 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Configure Git credentials
-      run: |
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git config --global user.name "${{ github.workflow }}"
-      shell: bash
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       with:
         node-version: '22'
-    - name: Cache Copilot CLI
-      uses: actions/cache@v4
-      if: ${{ inputs.cache-cli == 'true' }}
-      with:
-        path: ~/.npm
-        key: ${{ runner.os }}-copilot-cli-${{ inputs.copilot-version }}
-        restore-keys: |
-          ${{ runner.os }}-copilot-cli-
-    - name: Install GitHub Copilot CLI
+    - name: Run GitHub Copilot CLI
+      id: copilot
+      shell: bash
       run: |
-        echo "::group::Installing GitHub Copilot CLI"
+        # Script
+
+        echo "::group::Install GitHub Copilot CLI"
         if [ "$COPILOT_VERSION" = "latest" ]; then
           npm install -g @github/copilot
         else
           npm install -g @github/copilot@$COPILOT_VERSION
         fi
-        copilot --version || echo "Warning: Could not get copilot version"
+        echo "CLI Version: $(copilot --version)"
         echo "::endgroup::"
-      shell: bash
-      env:
-        COPILOT_VERSION: ${{ inputs.copilot-version }}
-    - name: Configure Copilot
-      shell: bash
-      run: |
-        echo "::group::Configuring Copilot"
-        mkdir -p $XDG_CONFIG_HOME/.copilot
         
-        # Create base MCP config with GitHub MCP server (comes pre-configured by default)
-        BASE_MCP_CONFIG='{
-          "mcpServers": {
-            "github-mcp-server": {
-              "type": "http",
-              "url": "https://api.githubcopilot.com/mcp/readonly",
-              "headers": {
-                "Authorization": "Bearer '$GH_TOKEN'",
-                "X-MCP-Toolsets": "'$GITHUB_MCP_TOOLSETS'"
-              },
-              "tools": ["*"]
-            }
-          }
-        }'
+        if [ -n "$MCP_CONFIG" ]; then
+          echo "::group::Configure Copilot MCP"
+          cat $XDG_CONFIG_HOME/.copilot/mcp-config.json || echo "No existing MCP config found"
+          mkdir -p $XDG_CONFIG_HOME/.copilot
+          
+          BASE_MCP_CONFIG='{
+            "mcpServers": { }
+          }'
 
-        # Merge user-provided MCP config with base config
-        MERGED_MCP_CONFIG=$(echo "$BASE_MCP_CONFIG" | jq --argjson user "$MCP_CONFIG" '.mcpServers += $user.mcpServers')
-        echo "$MERGED_MCP_CONFIG" > $XDG_CONFIG_HOME/.copilot/mcp-config.json
-        cat $XDG_CONFIG_HOME/.copilot/mcp-config.json
-
-        # Write user-provided config (trusted directories are set via --add-dir flags instead)
-        echo "$CONFIG" > $XDG_CONFIG_HOME/.copilot/config.json
-        cat $XDG_CONFIG_HOME/.copilot/config.json
-        echo "::endgroup::"
-      env:
-        CONFIG: ${{ inputs.copilot-config }}
-        MCP_CONFIG: ${{ inputs.mcp-config }}
-        GITHUB_MCP_TOOLSETS: ${{ inputs.github-mcp-toolsets }}
-        GH_TOKEN: ${{ inputs.github-token }}
-    - name: Run Copilot CLI
-      id: copilot
-      run: |
-        echo "::group::Verifying GitHub authentication"
-        gh auth status
-        echo "::endgroup::"
-
-        set +e  # Don't exit on error
+          MERGED_MCP_CONFIG=$(echo "$BASE_MCP_CONFIG" | jq --argjson user "$MCP_CONFIG" '.mcpServers += $user.mcpServers')
+          echo "$MERGED_MCP_CONFIG" > $XDG_CONFIG_HOME/.copilot/mcp-config.json
+          cat $XDG_CONFIG_HOME/.copilot/mcp-config.json
+          echo "::endgroup::"
+        fi
         
-        # Build args array for safer execution with multi-line prompts
-        COPILOT_ARGS=(-p "$PROMPT")
+        echo "::group::Copilot Options"
+        COPILOT_ARGS=""
 
-        # Pre-trust common paths that Copilot might need in CI environment
-        COPILOT_ARGS+=(--add-dir "/")
-        
-        # Add additional trusted directories
+        COPILOT_ARGS+="--add-dir / "
         if [ -n "$ADDITIONAL_DIRS" ]; then
           IFS=',' read -ra DIRS <<< "$ADDITIONAL_DIRS"
           for dir in "${DIRS[@]}"; do
-            COPILOT_ARGS+=(--add-dir "$dir")
+            COPILOT_ARGS+="--add-dir $dir "
           done
         fi
-        
-        # Add disabled MCP servers
         if [ -n "$DISABLE_MCP_SERVERS" ]; then
           IFS=',' read -ra SERVERS <<< "$DISABLE_MCP_SERVERS"
           for server in "${SERVERS[@]}"; do
-            COPILOT_ARGS+=(--disable-mcp-server "$server")
+            COPILOT_ARGS+="--disable-mcp-server $server "
           done
         fi
-        
-        # Add tool permissions
-        if [ "$ALLOW_ALL_TOOLS" = "true" ]; then
-          COPILOT_ARGS+=(--allow-all-tools)
+        if [ "$ENABLE_ALL_GITHUB_MCP_TOOLS" = "true" ]; then
+          COPILOT_ARGS+="--enable-all-github-mcp-tools "
         fi
-        
-        # Add denied tools
+        if [ "$ALLOW_ALL_TOOLS" = "true" ]; then
+          COPILOT_ARGS+="--allow-all-tools "
+        fi
+        if [ -n "$ALLOWED_TOOLS" ]; then
+          IFS=',' read -ra TOOLS <<< "$ALLOWED_TOOLS"
+          for tool in "${TOOLS[@]}"; do
+            COPILOT_ARGS+="--allow-tool $tool "
+          done
+        fi
         if [ -n "$DENIED_TOOLS" ]; then
           IFS=',' read -ra TOOLS <<< "$DENIED_TOOLS"
           for tool in "${TOOLS[@]}"; do
-            COPILOT_ARGS+=(--deny-tool "$tool")
+            COPILOT_ARGS+="--deny-tool $tool "
           done
         fi
-        
-        # Add model selection
         if [ -n "$MODEL" ]; then
-          COPILOT_ARGS+=(--model "$MODEL")
+          COPILOT_ARGS+="--model $MODEL "
         fi
-        
-        # Add no-color flag for CI environments
-        if [ "$NO_COLOR" = "true" ]; then
-          COPILOT_ARGS+=(--no-color)
+        if [ -n "$AGENT" ]; then
+          COPILOT_ARGS+="--agent $AGENT "
         fi
-        
-        # Add screen reader optimizations
-        if [ "$SCREEN_READER" = "true" ]; then
-          COPILOT_ARGS+=(--screen-reader)
-        fi
-        
-        # Add resume session
         if [ -n "$RESUME_SESSION" ]; then
           if [ "$RESUME_SESSION" = "latest" ]; then
-            COPILOT_ARGS+=(--continue)
+            COPILOT_ARGS+="--continue "
           else
-            COPILOT_ARGS+=(--resume "$RESUME_SESSION")
+            COPILOT_ARGS+="--resume $RESUME_SESSION "
           fi
         fi
-        
-        # Add banner flag
-        if [ "$SHOW_BANNER" = "true" ]; then
-          COPILOT_ARGS+=(--banner)
+        if [ -n "$LOG_LEVEL" ]; then
+          COPILOT_ARGS+="--log-level $LOG_LEVEL "
         fi
-        
-        # Add other options
-        COPILOT_ARGS+=(--log-level "$LOG_LEVEL")
-        COPILOT_ARGS+=(--log-dir "$HOME/.copilot/logs")
-        
-        # Debug: Show the full command being executed
-        echo "::group::GitHub Copilot CLI command"
-        printf '%s\n' "${COPILOT_ARGS[@]}"
+        if [ -n "$EXTRA_ARGS" ]; then
+          COPILOT_ARGS+="$EXTRA_ARGS "
+        fi
+        COPILOT_ARGS+="--log-dir $HOME/.copilot/logs "
+
+        echo "$COPILOT_ARGS"
         echo "::endgroup::"
-        
-        # Execute the command with array expansion for proper quoting
-        copilot "${COPILOT_ARGS[@]}"
+
+        echo "::group::Prompt"
+        echo "$PROMPT"
+        echo "::endgroup::"
+
+        echo "::group::Run Copilot CLI"
+        set +e
+        copilot -p "$PROMPT" $COPILOT_ARGS
         EXIT_CODE=$?
-        
-        # Set outputs
+        echo "::endgroup::"
+
         echo "logs_path=$HOME/.copilot/logs" >> $GITHUB_OUTPUT
         echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.repo-token || inputs.copilot-token }}
+        COPILOT_GITHUB_TOKEN: ${{ inputs.copilot-token }}
         PROMPT: ${{ inputs.prompt }}
-        LOG_LEVEL: ${{ inputs.log-level }}
+        COPILOT_VERSION: ${{ inputs.copilot-version }}
+        CONFIG: ${{ inputs.copilot-config }}
+        MCP_CONFIG: ${{ inputs.mcp-config }}
         ALLOW_ALL_TOOLS: ${{ inputs.allow-all-tools }}
+        ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
         DENIED_TOOLS: ${{ inputs.denied-tools }}
         MODEL: ${{ inputs.model }}
+        AGENT: ${{ inputs.agent }}
         ADDITIONAL_DIRS: ${{ inputs.additional-directories }}
         DISABLE_MCP_SERVERS: ${{ inputs.disable-mcp-servers }}
-        NO_COLOR: ${{ inputs.no-color }}
-        SCREEN_READER: ${{ inputs.screen-reader }}
+        ENABLE_ALL_GITHUB_MCP_TOOLS: ${{ inputs.enable-all-github-mcp-tools }}
         RESUME_SESSION: ${{ inputs.resume-session }}
-        SHOW_BANNER: ${{ inputs.show-banner }}
-        TEMP: ${{ runner.temp }}
-        GITHUB_WORKSPACE: ${{ github.workspace }}
-      shell: bash
+        LOG_LEVEL: ${{ inputs.log-level }}
+        EXTRA_ARGS: ${{ inputs.options }}
     - name: Upload Copilot Artifacts
       uses: actions/upload-artifact@v4
       if: ${{ always() && inputs.upload-artifact == 'true' }}

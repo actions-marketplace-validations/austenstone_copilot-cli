@@ -1,17 +1,38 @@
 on:
   workflow_run:
-    workflows: [CI] # add workflows here
+    workflows: ['*'] # All workflow failures
     types: [completed]
+
+permissions: write-all # We need workflow: write
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.event_name }}-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
 
 jobs:
   ci-failure:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: austenstone/copilot-cli@main
         with:
-          github-token: ${{ secrets.PAT }}
+          copilot-token: ${{ secrets.PAT }}
+          repo-token: ${{ github.actor == 'dependabot[bot]' && secrets.PAT || github.token }}
+          mcp-config: |
+            {
+              "mcpServers": {
+                "github-mcp-server": {
+                  "type": "http",
+                  "url": "https://api.githubcopilot.com/mcp/",
+                  "headers": {
+                    "Authorization": "Bearer ${{ secrets.PAT }}",
+                    "X-MCP-Toolsets": "*"
+                  },
+                  "tools": ["*"]
+                }
+              }
+            }
+          agent: cicd-repair
           prompt: |
             The GitHub Actions workflow run failed.
             Please analyze the failure and suggest a fix.

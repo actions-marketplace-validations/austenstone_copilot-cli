@@ -6,25 +6,15 @@ jobs:
   copilot:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: austenstone/copilot-cli@main
         with:
-          mcp-config: |
-            {
-              "mcpServers": {
-                "time": {
-                  "command": "uvx",
-                  "args": [
-                    "mcp-server-time",
-                    "--local-timezone",
-                    "America/New_York"
-                  ],
-                  "tools": ["*"]
-                }
-              }
-            }
+          copilot-token: ${{ secrets.PAT }}
           prompt: |
-            Try to experiment with mcp tools available to see what they do and if they work.
+            Who are you?
 
-            List all tools.
+            What is your plan?
+            
+            What tools do you have? Will you use them?
 
-            Try the github mcp tools.
+            Can you test out some github mcp tools?

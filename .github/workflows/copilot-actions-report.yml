@@ -1,0 +1,51 @@
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+jobs:
+  actions-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: austenstone/copilot-cli@main
+        with:
+          copilot-token: ${{ secrets.PAT }}
+          mcp-config: |
+            {
+              "mcpServers": {
+                "github-mcp-server": {
+                  "type": "http",
+                  "url": "https://api.githubcopilot.com/mcp/",
+                  "headers": {
+                    "Authorization": "Bearer ${{ secrets.PAT }}",
+                    "X-MCP-Toolsets": "*"
+                  },
+                  "tools": ["*"]
+                }
+              }
+            }
+          prompt: |
+            You are an expert GitHub Actions Analyst. Your task is to analyze the repository context from the provided JSON and, using your tools, fetch the last 100 workflow runs to generate a "Workflow Optimization Report."
+
+            **Your Analysis Must Cover:**
+            1.  **Flaky Tests:** Identify jobs that fail intermittently on the same code.
+            2.  **Performance:** Trend analysis of build times and queue times.
+            3.  **Waste:** Identify redundant executions or steps that can be cached.
+
+            **Output Format:**
+            Create a Markdown-formatted GitHub Issue.
+            * Start with a **Summary Table** (Success Rate, Avg Duration, Flake Rate).
+            * Use **collapsible sections** (`<details>`) for raw log analysis.
+            * End with a **"High Impact Fixes"** checklist.
+
+            ## CRITICAL INSTRUCTIONS - READ CAREFULLY
+            - You MUST complete this task fully. Do NOT stop early or give up.
+            - You MUST actually create the GitHub issue.
+            - The issue should be created in the repository: ${{ github.repository }}
+            - If you encounter any issues, work around them and keep going until the issue is created.
+            - Do not ask for additional input. You have everything you need.
+
+            ## Input Data
+            ```json
+            ${{ toJson(github.event) }}
