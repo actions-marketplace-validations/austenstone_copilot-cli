@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event.pull_request.state == 'open' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - uses: austenstone/copilot-cli@main
         with:
           copilot-token: ${{ secrets.PAT }}
