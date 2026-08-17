@@ -8,6 +8,10 @@ inputs:
     description: '(Deprecated) The default github.token now supports copilot-requests permission — no PAT needed. Only provide this if you need to override with a specific token.'
     required: false
     default: ${{ github.token }}
+  repo-token:
+    description: 'Token for repository operations (gh CLI). Defaults to github.token. Use a PAT if the agent needs elevated repo permissions.'
+    required: false
+    default: ${{ github.token }}
   prompt:
     description: 'Prompt to send to GitHub Copilot'
     required: true
@@ -20,16 +24,16 @@ inputs:
     default: |
       {
         "banner": "never",
-        "render_markdown": true,
+        "renderMarkdown": true,
         "theme": "auto",
-        "trusted_folders": []
+        "trustedFolders": []
       }
   autopilot:
     description: 'Enable autopilot continuation in prompt mode'
     required: false
     default: true
   max-turns:
-    description: 'Maximum number of autopilot continuation turns (default: unlimited)'
+    description: 'Maximum number of autopilot continuation turns (CLI default: 5 when unset)'
     required: false
   no-ask-user:
     description: 'Disable the ask_user tool so the agent works autonomously without asking questions'
@@ -56,11 +60,11 @@ inputs:
     description: 'Comma-separated list of URLs or domains to deny (e.g., "evil.com")'
     required: false
   copilot-version:
-    description: 'Version of Copilot CLI to install (e.g., "latest", "prerelease", "0.0.329")'
+    description: 'Version of Copilot CLI to install (e.g., "latest", "prerelease", "1.0.63")'
     required: false
     default: 'prerelease'
   model:
-    description: 'Model to use (e.g., "claude-sonnet-4.5", "claude-sonnet-4", "gpt-5")'
+    description: 'Model to use (e.g., "claude-sonnet-4.6", "claude-opus-4.8", "gpt-5.5")'
     required: false
   additional-directories:
     description: 'Comma-separated list of additional directories to trust for file access (e.g., "/tmp,/var/log")'
@@ -69,7 +73,7 @@ inputs:
     description: 'Comma-separated list of MCP servers to disable (e.g., "github-mcp-server,custom-server")'
     required: false
   disable-builtin-mcps:
-    description: 'Disable all built-in MCP servers (github-mcp-server, playwright, fetch, time)'
+    description: 'Disable all built-in MCP servers (currently only github-mcp-server)'
     required: false
     default: false
   enable-all-github-mcp-tools:
@@ -93,7 +97,7 @@ inputs:
     description: 'Specify a custom agent to use'
     required: false
   reasoning-effort:
-    description: 'Set the reasoning effort level (e.g., "low", "medium", "high", "xhigh")'
+    description: 'Set the reasoning effort level (choices: "none", "low", "medium", "high", "xhigh", "max")'
     required: false
   output-format:
     description: 'Output format (e.g., "json" for JSONL output in prompt mode)'
@@ -121,6 +125,52 @@ inputs:
     description: 'Additional options to pass to the Copilot CLI (e.g., "--no-custom-instructions --model gpt-5")'
     required: false
     default: '--screen-reader --no-color --stream off'
+  secret-env-vars:
+    description: 'Comma-separated list of environment variable names whose values will be redacted from output and logs (e.g., "MY_SECRET,API_KEY")'
+    required: false
+  allow-all-urls:
+    description: 'Allow all URLs/network access without approval'
+    required: false
+    default: false
+  allow-all-paths:
+    description: 'Allow access to all file paths without approval. When false (default), the agent is scoped to $GITHUB_WORKSPACE instead of the entire filesystem.'
+    required: false
+    default: false
+  context:
+    description: 'Context window mode (choices: "default", "long_context")'
+    required: false
+  attachments:
+    description: 'Comma-separated list of file paths to attach to the prompt (e.g., "./diagram.png,./notes.txt")'
+    required: false
+  available-tools:
+    description: 'Comma-separated list of tools to make available (allowlist)'
+    required: false
+  excluded-tools:
+    description: 'Comma-separated list of tools to exclude'
+    required: false
+  enable-memory:
+    description: 'Enable the agent memory feature'
+    required: false
+    default: false
+  additional-mcp-config:
+    description: 'Comma-separated list of additional MCP configurations; each item is a JSON string or an @file path (e.g., "@mcp.json")'
+    required: false
+  mode:
+    description: 'Run mode (choices: "interactive", "plan", "autopilot")'
+    required: false
+  session-id:
+    description: 'Use a specific session ID'
+    required: false
+  name:
+    description: 'Name for the session'
+    required: false
+  disallow-temp-dir:
+    description: 'Disallow the agent from using the system temp directory'
+    required: false
+    default: false
+  plugin-dir:
+    description: 'Comma-separated list of plugin directories to load'
+    required: false
 outputs:
   logs-path:
     description: 'Path to the copilot logs directory'
@@ -134,16 +184,23 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - uses: actions/setup-copilot@v0
+    - uses: actions/setup-node@v6
       with:
-        version: ${{ inputs.copilot-version }}
+        node-version: '22'
     - name: Run GitHub Copilot CLI
       id: copilot
       shell: bash
       run: |
         # Script
 
-        echo "::group::Copilot CLI Version"
+        echo "::group::Install GitHub Copilot CLI"
+        if [ "$COPILOT_VERSION" = "latest" ]; then
+          npm install -g @github/copilot
+        elif [ "$COPILOT_VERSION" = "prerelease" ]; then
+          npm install -g @github/copilot@prerelease
+        else
+          npm install -g @github/copilot@$COPILOT_VERSION
+        fi
         echo "CLI Version: $(copilot --version)"
         echo "::endgroup::"
 
@@ -173,12 +230,33 @@ runs:
         echo "::group::Copilot Options"
         COPILOT_ARGS=""
 
-        COPILOT_ARGS+="--add-dir / "
+        # Default to the checked-out workspace instead of the whole filesystem.
+        # Root access is opt-in via allow-all-paths to limit untrusted-prompt blast radius (#70).
+        if [ "$ALLOW_ALL_PATHS" = "true" ]; then
+          COPILOT_ARGS+="--add-dir / "
+        else
+          COPILOT_ARGS+="--add-dir $GITHUB_WORKSPACE "
+        fi
         if [ -n "$ADDITIONAL_DIRS" ]; then
           IFS=',' read -ra DIRS <<< "$ADDITIONAL_DIRS"
           for dir in "${DIRS[@]}"; do
             COPILOT_ARGS+="--add-dir $dir "
           done
+        fi
+        if [ -n "$ATTACHMENTS" ]; then
+          IFS=',' read -ra ATTACHS <<< "$ATTACHMENTS"
+          for attach in "${ATTACHS[@]}"; do
+            COPILOT_ARGS+="--attachment $attach "
+          done
+        fi
+        if [ -n "$PLUGIN_DIR" ]; then
+          IFS=',' read -ra PLUGIN_DIRS <<< "$PLUGIN_DIR"
+          for pdir in "${PLUGIN_DIRS[@]}"; do
+            COPILOT_ARGS+="--plugin-dir $pdir "
+          done
+        fi
+        if [ "$DISALLOW_TEMP_DIR" = "true" ]; then
+          COPILOT_ARGS+="--disallow-temp-dir "
         fi
         if [ -n "$DISABLE_MCP_SERVERS" ]; then
           IFS=',' read -ra SERVERS <<< "$DISABLE_MCP_SERVERS"
@@ -188,6 +266,12 @@ runs:
         fi
         if [ "$DISABLE_BUILTIN_MCPS" = "true" ]; then
           COPILOT_ARGS+="--disable-builtin-mcps "
+        fi
+        if [ -n "$ADDITIONAL_MCP_CONFIG" ]; then
+          IFS=',' read -ra MCP_CONFIGS <<< "$ADDITIONAL_MCP_CONFIG"
+          for cfg in "${MCP_CONFIGS[@]}"; do
+            COPILOT_ARGS+="--additional-mcp-config $cfg "
+          done
         fi
         if [ "$ENABLE_ALL_GITHUB_MCP_TOOLS" = "true" ]; then
           COPILOT_ARGS+="--enable-all-github-mcp-tools "
@@ -219,6 +303,12 @@ runs:
             COPILOT_ARGS+="--deny-tool $tool "
           done
         fi
+        if [ -n "$AVAILABLE_TOOLS" ]; then
+          COPILOT_ARGS+="--available-tools=$AVAILABLE_TOOLS "
+        fi
+        if [ -n "$EXCLUDED_TOOLS" ]; then
+          COPILOT_ARGS+="--excluded-tools=$EXCLUDED_TOOLS "
+        fi
         if [ -n "$ALLOWED_URLS" ]; then
           IFS=',' read -ra URLS <<< "$ALLOWED_URLS"
           for url in "${URLS[@]}"; do
@@ -231,11 +321,23 @@ runs:
             COPILOT_ARGS+="--deny-url $url "
           done
         fi
+        if [ "$ALLOW_ALL_URLS" = "true" ]; then
+          COPILOT_ARGS+="--allow-all-urls "
+        fi
+        if [ "$ALLOW_ALL_PATHS" = "true" ]; then
+          COPILOT_ARGS+="--allow-all-paths "
+        fi
         if [ -n "$MODEL" ]; then
           COPILOT_ARGS+="--model $MODEL "
         fi
+        if [ -n "$CONTEXT" ]; then
+          COPILOT_ARGS+="--context $CONTEXT "
+        fi
         if [ -n "$AGENT" ]; then
           COPILOT_ARGS+="--agent $AGENT "
+        fi
+        if [ -n "$NAME" ]; then
+          COPILOT_ARGS+="-n $NAME "
         fi
         if [ -n "$RESUME_SESSION" ]; then
           if [ "$RESUME_SESSION" = "latest" ]; then
@@ -243,6 +345,9 @@ runs:
           else
             COPILOT_ARGS+="--resume $RESUME_SESSION "
           fi
+        fi
+        if [ -n "$SESSION_ID" ]; then
+          COPILOT_ARGS+="--session-id $SESSION_ID "
         fi
         if [ -n "$LOG_LEVEL" ]; then
           COPILOT_ARGS+="--log-level $LOG_LEVEL "
@@ -253,8 +358,11 @@ runs:
         if [ -n "$OUTPUT_FORMAT" ]; then
           COPILOT_ARGS+="--output-format $OUTPUT_FORMAT "
         fi
-        if [ "$AUTOPILOT" = "true" ]; then
+        if [ "$AUTOPILOT" = "true" ] && [ -z "$MODE" ]; then
           COPILOT_ARGS+="--autopilot "
+        fi
+        if [ -n "$MODE" ]; then
+          COPILOT_ARGS+="--mode $MODE "
         fi
         if [ -n "$MAX_TURNS" ]; then
           COPILOT_ARGS+="--max-autopilot-continues $MAX_TURNS "
@@ -267,6 +375,12 @@ runs:
         fi
         if [ "$EXPERIMENTAL" = "true" ]; then
           COPILOT_ARGS+="--experimental "
+        fi
+        if [ "$ENABLE_MEMORY" = "true" ]; then
+          COPILOT_ARGS+="--enable-memory "
+        fi
+        if [ -n "$SECRET_ENV_VARS" ]; then
+          COPILOT_ARGS+="--secret-env-vars=$SECRET_ENV_VARS "
         fi
         if [ -n "$SHARE" ]; then
           if [ "$SHARE" = "true" ]; then
@@ -311,8 +425,10 @@ runs:
         fi
       env:
         GITHUB_TOKEN: ${{ inputs.copilot-token }}
-        GH_TOKEN: ${{ inputs.copilot-token }}
+        GH_TOKEN: ${{ inputs.repo-token }}
+        COPILOT_GITHUB_TOKEN: ${{ inputs.copilot-token }}
         PROMPT: ${{ inputs.prompt }}
+        COPILOT_VERSION: ${{ inputs.copilot-version }}
         CONFIG: ${{ inputs.copilot-config }}
         MCP_CONFIG: ${{ inputs.mcp-config }}
         ALLOW_ALL_TOOLS: ${{ inputs.allow-all-tools }}
@@ -341,6 +457,20 @@ runs:
         ADD_GITHUB_MCP_TOOLSETS: ${{ inputs.add-github-mcp-toolsets }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
         EXTRA_ARGS: ${{ inputs.options }}
+        SECRET_ENV_VARS: ${{ inputs.secret-env-vars }}
+        ALLOW_ALL_URLS: ${{ inputs.allow-all-urls }}
+        ALLOW_ALL_PATHS: ${{ inputs.allow-all-paths }}
+        CONTEXT: ${{ inputs.context }}
+        ATTACHMENTS: ${{ inputs.attachments }}
+        AVAILABLE_TOOLS: ${{ inputs.available-tools }}
+        EXCLUDED_TOOLS: ${{ inputs.excluded-tools }}
+        ENABLE_MEMORY: ${{ inputs.enable-memory }}
+        ADDITIONAL_MCP_CONFIG: ${{ inputs.additional-mcp-config }}
+        MODE: ${{ inputs.mode }}
+        SESSION_ID: ${{ inputs.session-id }}
+        NAME: ${{ inputs.name }}
+        DISALLOW_TEMP_DIR: ${{ inputs.disallow-temp-dir }}
+        PLUGIN_DIR: ${{ inputs.plugin-dir }}
     - name: Upload Copilot Artifacts
       uses: actions/upload-artifact@v4
       if: ${{ always() && inputs.upload-artifact == 'true' }}
