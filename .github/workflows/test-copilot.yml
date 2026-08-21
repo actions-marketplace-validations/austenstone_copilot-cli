@@ -11,8 +11,9 @@ on:
       - action.yml
       - .github/workflows/test-copilot.yml
   schedule:
-    # Nightly drift check — the action installs @github/copilot@prerelease at
-    # runtime, so this is the only thing that catches a breaking CLI release.
+    # Nightly drift check — the prerelease-drift job installs @github/copilot@prerelease,
+    # so this is the only thing that catches a breaking CLI release before it reaches
+    # the stable `latest` channel that consumers get by default.
     - cron: '0 7 * * *'
   workflow_dispatch:
 
@@ -28,8 +29,9 @@ jobs:
   # Basic smoke test — defaults only
   basic:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         id: copilot
         with:
@@ -40,11 +42,61 @@ jobs:
           echo "Exit code: ${{ steps.copilot.outputs.exit-code }}"
           test "${{ steps.copilot.outputs.exit-code }}" = "0"
 
+  # Early warning for breaking changes in the prerelease CLI channel.
+  # The action defaults to `latest`, so this is what catches drift before consumers hit it.
+  prerelease-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        id: copilot
+        with:
+          prompt: "Say 'prerelease works' and nothing else."
+          copilot-version: prerelease
+          max-turns: 1
+      - name: Verify exit code output
+        run: test "${{ steps.copilot.outputs.exit-code }}" = "0"
+
+  # Ranges contain '>' which shell-redirects if the npm spec isn't quoted.
+  version-spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        id: copilot
+        with:
+          prompt: "Say 'version spec works' and nothing else."
+          copilot-version: '>=1.0.80'
+          max-turns: 1
+      - name: Verify exit code output
+        run: test "${{ steps.copilot.outputs.exit-code }}" = "0"
+
+  # The default copilot-version is pinned for reproducibility, so it needs a nudge
+  # when it falls behind. Only fails on the nightly schedule so PRs aren't blocked
+  # every time the CLI ships.
+  version-pin-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare pinned default against registry latest
+        run: |
+          PINNED=$(python3 -c "import yaml;print(yaml.safe_load(open('action.yml'))['inputs']['copilot-version']['default'])")
+          LATEST=$(npm view --registry=https://registry.npmjs.org '@github/copilot@latest' version)
+          echo "pinned=\`$PINNED\` latest=\`$LATEST\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PINNED" = "$LATEST" ]; then
+            echo "Pinned default is current ($PINNED)."
+            exit 0
+          fi
+          echo "::warning::copilot-version default is pinned to $PINNED but @latest is $LATEST"
+          test "${{ github.event_name }}" != "schedule"
+
   # Test autopilot + max-turns limit with tool use
   autopilot:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Create a file called test.txt with the content 'autopilot works'. Then read it back to confirm."
@@ -57,8 +109,9 @@ jobs:
   # Test silent mode — no usage stats in output
   silent:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say 'silent mode works' and nothing else."
@@ -68,8 +121,9 @@ jobs:
   # Test model selection + reasoning effort
   model:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "What model are you? Reply with just your model name."
@@ -80,8 +134,9 @@ jobs:
   # Test JSON output format
   json-output:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say 'json works'."
@@ -91,8 +146,9 @@ jobs:
   # Test tool deny list — shell should be blocked
   denied-tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Try to run 'echo hello' in a shell. If you can't, just say 'shell denied'."
@@ -102,8 +158,9 @@ jobs:
   # Test GitHub MCP toolsets
   github-mcp:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Use the GitHub MCP to get info about the repo austenstone/copilot-cli. Tell me the description and star count."
@@ -113,8 +170,9 @@ jobs:
   # Test disable builtin MCPs
   no-builtin-mcps:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "List your available MCP servers. If none, say 'no MCP servers available'."
@@ -124,8 +182,9 @@ jobs:
   # Test URL allow/deny
   url-controls:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Fetch https://api.github.com/zen and tell me what it says."
@@ -136,8 +195,9 @@ jobs:
   # Test share session to file + verify output
   share:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         id: copilot
         with:
@@ -153,8 +213,9 @@ jobs:
   # Test experimental flag
   experimental:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say 'experimental mode active'."
@@ -164,8 +225,9 @@ jobs:
   # Test additional directories
   additional-dirs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: |
           mkdir -p /tmp/copilot-test
           echo "found me" > /tmp/copilot-test/secret.txt
@@ -178,8 +240,9 @@ jobs:
   # Test custom agent
   agent:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "What files are in this repo?"
@@ -189,8 +252,9 @@ jobs:
   # Test fail-on-error catches non-zero exit
   fail-on-error:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         id: copilot
         continue-on-error: true
@@ -203,28 +267,70 @@ jobs:
           echo "Exit code: ${{ steps.copilot.outputs.exit-code }}"
           echo "Step outcome: ${{ steps.copilot.outcome }}"
 
-  # Test copilot-config is applied
+  # Test copilot-config is merged into settings.json
   config:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+      - name: Seed a pre-existing user setting
+        run: |
+          mkdir -p ~/.copilot
+          echo '{"beep":true}' > ~/.copilot/settings.json
       - uses: ./
         with:
           prompt: "Say 'config test passed'."
           copilot-config: |
             {
               "banner": "never",
-              "render_markdown": false,
-              "theme": "dark",
-              "trusted_folders": []
+              "renderMarkdown": false,
+              "theme": "dim"
             }
           max-turns: 1
+      - name: Verify settings.json merged without clobbering
+        run: |
+          cat ~/.copilot/settings.json
+          test "$(jq -r '.theme' ~/.copilot/settings.json)" = "dim"
+          test "$(jq -r '.renderMarkdown' ~/.copilot/settings.json)" = "false"
+          test "$(jq -r '.beep' ~/.copilot/settings.json)" = "true"
+
+  # Pre-1.0.35 CLIs never read settings.json, so config must land in config.json
+  config-legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          prompt: "Say 'legacy config test passed'."
+          copilot-version: '1.0.34'
+          copilot-config: '{"banner":"never"}'
+          max-turns: 1
+      - name: Verify config landed in config.json, not settings.json
+        run: |
+          test "$(jq -r '.banner' ~/.copilot/config.json)" = "never"
+          test ! -s ~/.copilot/settings.json
+
+  # Invalid copilot-config must fail fast rather than silently no-op
+  config-invalid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: bad
+        continue-on-error: true
+        uses: ./
+        with:
+          prompt: "Should never run."
+          copilot-config: '{not valid json'
+          max-turns: 1
+      - name: Verify the action rejected it
+        run: test "${{ steps.bad.outcome }}" = "failure"
 
   # Test long context window selection
   context:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
@@ -234,8 +340,9 @@ jobs:
   # Test blanket URL allow
   allow-all-urls:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
@@ -245,8 +352,9 @@ jobs:
   # Test blanket path allow
   allow-all-paths:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
@@ -256,8 +364,9 @@ jobs:
   # Test forwarding environment variables to the CLI
   secret-env-vars:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         env:
           DUMMY_SECRET: hunter2
@@ -269,8 +378,9 @@ jobs:
   # Test tool exclusion list
   excluded-tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello."
@@ -280,8 +390,9 @@ jobs:
   # Test tool allow list
   available-tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello."
@@ -291,8 +402,9 @@ jobs:
   # Test persistent memory
   enable-memory:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
@@ -302,8 +414,9 @@ jobs:
   # Test plan mode — the action skips --autopilot when mode is set
   mode-plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
@@ -313,8 +426,9 @@ jobs:
   # Test file attachments
   attachments:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: echo hi > note.txt
       - uses: ./
         with:
@@ -325,10 +439,48 @@ jobs:
   # Test disabling the temp directory
   disallow-temp-dir:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./
         with:
           prompt: "Say hello and exit."
           disallow-temp-dir: true
           max-turns: 1
+
+  # Mirrors the README quickstart exactly. Scoped job permissions catch the
+  # trap where declaring a block drops contents/copilot-requests to none.
+  readme-example:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      copilot-requests: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          prompt: "Say 'readme example works'."
+          max-turns: 1
+          fail-on-error: true
+
+  # Newly added jobs have twice drifted onto stale action majors after a bulk
+  # upgrade, and a stale major silently reintroduces the Node 20 deprecation.
+  action-major-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fail on outdated first-party action majors
+        run: |
+          STALE=$(grep -rnoE 'uses: actions/(checkout|upload-artifact|setup-node)@v[0-9]+' .github/workflows \
+            | grep -vE 'checkout@v7|upload-artifact@v7|setup-node@v6' || true)
+          if [ -n "$STALE" ]; then
+            echo "::error::Outdated action majors found:"
+            echo "$STALE"
+            exit 1
+          fi
+          echo "All first-party action majors are current."
